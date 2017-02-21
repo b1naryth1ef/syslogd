@@ -24,9 +24,10 @@ type Server struct {
 }
 
 // NewServer build a new server
-func NewServer() *Server {
+func NewServer(channel chan syslogparser.LogParts) *Server {
 	return &Server{
-		Format: RFC3164,
+		Format:  RFC3164,
+		channel: channel,
 	}
 }
 
@@ -43,11 +44,11 @@ func (s *Server) AddUDPListener(li net.Conn) {
 	}
 }
 
-func (s *Server) AddTCPListener(li net.TCPListener) {
+func (s *Server) AddTCPListener(li net.Listener) {
 	go s.handleTCP(li)
 }
 
-func (s *Server) handleTCP(conn net.TCPListener) {
+func (s *Server) handleTCP(conn net.Listener) {
 	handleTCPConn := func(client net.Conn) {
 		var err error
 		var sz int
