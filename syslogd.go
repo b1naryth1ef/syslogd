@@ -2,7 +2,6 @@
 package syslogd
 
 import (
-	"log"
 	"net"
 
 	"github.com/jeromer/syslogparser"
@@ -17,83 +16,71 @@ const (
 	RFC5424               // RFC5424: http://www.ietf.org/rfc/rfc5424.txt
 )
 
+type udpReadFunc func([]byte) (int, net.Addr, error)
+
 type Server struct {
-	connections []net.Conn
-	format      Format
-	channel     chan syslogparser.LogParts
+	Format  Format
+	channel chan syslogparser.LogParts
 }
 
 // NewServer build a new server
 func NewServer() *Server {
-	return &Server{}
-}
-
-// SetFormat the syslog format
-func (s *Server) SetFormat(format Format) {
-	s.format = format
-}
-
-// ListenUDP add a server to listen on an UDP addr
-func (s *Server) ListenUDP(addr string) error {
-	log.Printf("started UDP listener")
-	udpAddr, err := net.ResolveUDPAddr("udp", addr)
-	if err != nil {
-		return err
-	}
-
-	connection, err := net.ListenUDP("udp", udpAddr)
-	if err != nil {
-		return err
-	}
-
-	s.connections = append(s.connections, connection)
-	return nil
-}
-
-// ListenUnixgram add a server to listen on a unix socket
-func (s *Server) ListenUnixgram(addr string) error {
-	unixAddr, err := net.ResolveUnixAddr("unixgram", addr)
-	if err != nil {
-		return err
-	}
-
-	connection, err := net.ListenUnixgram("unixgram", unixAddr)
-	if err != nil {
-		return err
-	}
-
-	s.connections = append(s.connections, connection)
-	return nil
-}
-
-// Start reading syslog records
-func (s *Server) Start(channel chan syslogparser.LogParts) {
-	s.channel = channel
-	for _, conn := range s.connections {
-		s.readDatagrams(conn)
+	return &Server{
+		Format: RFC3164,
 	}
 }
 
-type readFunc func([]byte) (int, net.Addr, error)
-
-func (s *Server) readDatagrams(conn net.Conn) {
-	log.Printf("scanning connection %s", conn.LocalAddr())
-
-	switch c := conn.(type) {
+func (s *Server) AddUDPListener(li net.Conn) {
+	switch c := li.(type) {
 	case *net.UDPConn:
-		go s.read(func(buf []byte) (int, net.Addr, error) {
+		go s.handleUDP(func(buf []byte) (int, net.Addr, error) {
 			return c.ReadFromUDP(buf)
 		})
 	case *net.UnixConn:
-		go s.read(func(buf []byte) (int, net.Addr, error) {
+		go s.handleUDP(func(buf []byte) (int, net.Addr, error) {
 			return c.ReadFromUnix(buf)
 		})
 	}
-
 }
 
-func (s *Server) read(read readFunc) {
+func (s *Server) AddTCPListener(li net.TCPListener) {
+	go s.handleTCP(li)
+}
 
+func (s *Server) handleTCP(conn net.TCPListener) {
+	handleTCPConn := func(client net.Conn) {
+		var err error
+		var sz int
+		addr := client.RemoteAddr().String()
+		buf := make([]byte, 4096)
+
+		for {
+			sz, err = client.Read(buf)
+
+			if sz == 0 || err != nil {
+				break
+			}
+
+			parts, err := s.parse(buf[:sz])
+
+			if err == nil {
+				parts["source"] = addr
+				s.channel <- parts
+			}
+		}
+	}
+
+	for {
+		conn, err := conn.Accept()
+		if err != nil {
+			panic(err)
+		}
+
+		go handleTCPConn(conn)
+	}
+}
+
+func (s *Server) handleUDP(read udpReadFunc) {
 	buf := make([]byte, 4096)
 
 	for {
@@ -117,7 +104,7 @@ func (s *Server) parse(buf []byte) (syslogparser.LogParts, error) {
 
 	var p syslogparser.LogParser
 
-	switch s.format {
+	switch s.Format {
 	case RFC3164:
 		p = rfc3164.NewParser(buf)
 	case RFC5424:
